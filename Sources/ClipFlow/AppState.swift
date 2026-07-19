@@ -153,6 +153,10 @@ final class AppState: ObservableObject {
     }
 
     func paste(_ item: ClipboardItem, from store: ClipStore) {
+        guard item.isFileAvailable else {
+            notice = "The original file is no longer available."
+            return
+        }
         do {
             let payload = try store.payloadData(for: item)
             let result = try pasteService.restore(

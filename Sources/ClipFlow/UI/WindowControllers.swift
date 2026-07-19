@@ -12,8 +12,8 @@ final class QuickPanelController: NSObject, NSWindowDelegate {
     init(state: AppState, store: ClipStore) {
         self.state = state
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 550),
-            styleMask: [.titled, .fullSizeContentView, .resizable, .utilityWindow],
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 366),
+            styleMask: [.titled, .fullSizeContentView, .utilityWindow],
             backing: .buffered,
             defer: false
         )
@@ -24,27 +24,37 @@ final class QuickPanelController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        panel.minSize = NSSize(width: 720, height: 440)
-        panel.backgroundColor = .windowBackgroundColor
+        panel.minSize = NSSize(width: 760, height: 350)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.animationBehavior = .utilityWindow
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.contentView = NSHostingView(rootView: QuickPanelView(store: store).environmentObject(state))
 
         keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isKeyWindow else { return event }
+            let navigationModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
             switch event.keyCode {
             case 53:
                 self.close()
                 return nil
-            case 125:
+            case 124 where self.state.searchQuery.isEmpty && navigationModifiers.isEmpty:
                 self.state.selectNext(offset: 1)
                 return nil
-            case 126:
+            case 123 where self.state.searchQuery.isEmpty && navigationModifiers.isEmpty:
+                self.state.selectNext(offset: -1)
+                return nil
+            case 125 where navigationModifiers.isEmpty:
+                self.state.selectNext(offset: 1)
+                return nil
+            case 126 where navigationModifiers.isEmpty:
                 self.state.selectNext(offset: -1)
                 return nil
             case 36, 76:
                 self.state.pasteSelected()
-                return nil
-            case 49 where self.state.searchQuery.isEmpty:
-                self.state.isPreviewVisible.toggle()
                 return nil
             default:
                 if event.modifierFlags.contains(.command),
@@ -67,11 +77,19 @@ final class QuickPanelController: NSObject, NSWindowDelegate {
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main
         if let visibleFrame = screen?.visibleFrame {
-            let size = panel.frame.size
-            panel.setFrameOrigin(NSPoint(
-                x: visibleFrame.midX - size.width / 2,
-                y: visibleFrame.midY - size.height / 2
-            ))
+            let size = NSSize(
+                width: min(max(760, visibleFrame.width - 48), 1380),
+                height: min(366, visibleFrame.height - 24)
+            )
+            panel.setFrame(
+                NSRect(
+                    x: visibleFrame.midX - size.width / 2,
+                    y: visibleFrame.minY + 12,
+                    width: size.width,
+                    height: size.height
+                ),
+                display: true
+            )
         }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
