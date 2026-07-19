@@ -194,7 +194,7 @@ private struct DataSettingsView: View {
                 LabeledContent("Storage", value: "On this Mac")
                 LabeledContent("Encryption", value: "AES-256-GCM")
                 LabeledContent("Cloud sync", value: "Off")
-                Text("Clip content is not uploaded for analytics. Encryption keys are stored in the macOS Keychain and cannot leave this Mac.")
+                Text("Clip content is not uploaded for analytics. The encryption key is stored at ~/.clipflow.json with owner-only permissions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

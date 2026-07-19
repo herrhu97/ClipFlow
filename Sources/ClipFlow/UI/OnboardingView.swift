@@ -70,7 +70,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 22) {
             PageHeading(icon: "hand.raised.fill", title: "Private by default", subtitle: "Clipboard history stays on this Mac.")
             VStack(alignment: .leading, spacing: 16) {
-                PrivacyLine(icon: "lock.fill", title: "Encrypted storage", detail: "Clipboard content is encrypted with a key in your macOS Keychain.")
+                PrivacyLine(icon: "lock.fill", title: "Encrypted storage", detail: "Clipboard content is encrypted with a key stored at ~/.clipflow.json.")
                 PrivacyLine(icon: "eye.slash.fill", title: "Sensitive content protection", detail: "Private pasteboard types and common credential patterns are ignored.")
                 PrivacyLine(icon: "nosign", title: "Application exclusions", detail: "Password managers are excluded by default. Add more apps in Settings.")
                 PrivacyLine(icon: "icloud.slash", title: "No cloud upload", detail: "This version does not sync or analyze clipboard content online.")

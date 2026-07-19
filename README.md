@@ -6,7 +6,7 @@ ClipFlow is a local-first macOS clipboard history manager. It runs in the menu b
 
 - SQLite-backed history with transactional writes and corruption recovery
 - AES-256-GCM encryption for clipboard text, search data, and external payloads
-- Encryption key stored in the macOS Keychain
+- Encryption key stored at `~/.clipflow.json` with owner-only permissions
 - Pasteboard privacy markers, password-manager exclusions, and sensitive-pattern filtering
 - Search by content, file name, source application, and group
 - Type, time, favorites, and group filters
@@ -38,4 +38,4 @@ The wrapper supplies the Swift Testing framework path used by Command Line Tools
 
 ## Local data
 
-History is stored under `~/Library/Application Support/ClipFlow`. Clearing history removes database rows, encrypted payload files, and SQLite WAL data before compacting the database. ClipFlow does not include analytics or cloud sync in this MVP.
+History is stored under `~/Library/Application Support/ClipFlow`. The encryption key is stored separately at `~/.clipflow.json` with `0600` permissions; back up both locations because existing history cannot be decrypted without this file. Version 0.3 does not migrate Keychain-backed history: on first launch it archives the old data directory beside the new one as `ClipFlow-Keychain-Backup-*` and starts with empty history. Clearing history removes database rows, encrypted payload files, and SQLite WAL data before compacting the database. ClipFlow does not include analytics or cloud sync in this MVP.

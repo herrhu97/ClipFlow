@@ -18,6 +18,8 @@ enum ClipStoreError: LocalizedError {
 
 @MainActor
 final class ClipStore: ObservableObject {
+    static let keyStorageMarkerFilename = ".file-key-storage-v1"
+
     @Published private(set) var items: [ClipboardItem] = []
     @Published private(set) var collections: [ClipCollection] = []
 
@@ -26,9 +28,14 @@ final class ClipStore: ObservableObject {
     private let rootDirectory: URL
     private let payloadDirectory: URL
     private let databaseURL: URL
+    private let keyStorageMarkerURL: URL
     private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init(rootDirectory: URL? = nil, vault: SecureVault? = nil) throws {
+    init(
+        rootDirectory: URL? = nil,
+        vault: SecureVault? = nil,
+        keyFileURL: URL = SecureVault.defaultKeyFileURL
+    ) throws {
         let fileManager = FileManager.default
         if let rootDirectory {
             self.rootDirectory = rootDirectory
@@ -43,9 +50,25 @@ final class ClipStore: ObservableObject {
         }
         payloadDirectory = self.rootDirectory.appendingPathComponent("Payloads", isDirectory: true)
         databaseURL = self.rootDirectory.appendingPathComponent("history.sqlite")
-        self.vault = try vault ?? SecureVault()
+        keyStorageMarkerURL = self.rootDirectory.appendingPathComponent(Self.keyStorageMarkerFilename)
+
+        if vault == nil {
+            try Self.archiveLegacyStoreIfNeeded(
+                rootDirectory: self.rootDirectory,
+                databaseURL: databaseURL,
+                keyFileURL: keyFileURL,
+                markerURL: keyStorageMarkerURL
+            )
+        }
+
+        self.vault = try vault ?? SecureVault(
+            keyFileURL: keyFileURL,
+            requiresExistingKey: fileManager.fileExists(atPath: keyStorageMarkerURL.path)
+                && Self.databaseContainsEncryptedData(at: databaseURL)
+        )
 
         try fileManager.createDirectory(at: payloadDirectory, withIntermediateDirectories: true)
+        if vault == nil { try Self.writeKeyStorageMarker(at: keyStorageMarkerURL) }
         try openAndRecoverIfNeeded()
         try migrate()
         try reload()
@@ -53,6 +76,69 @@ final class ClipStore: ObservableObject {
 
     deinit {
         if let database { sqlite3_close(database) }
+    }
+
+    private static func archiveLegacyStoreIfNeeded(
+        rootDirectory: URL,
+        databaseURL: URL,
+        keyFileURL: URL,
+        markerURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: keyFileURL.path),
+              !fileManager.fileExists(atPath: markerURL.path),
+              fileManager.fileExists(atPath: databaseURL.path) else { return }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let parent = rootDirectory.deletingLastPathComponent()
+        var backup = parent.appendingPathComponent(
+            "ClipFlow-Keychain-Backup-\(formatter.string(from: Date()))",
+            isDirectory: true
+        )
+        if fileManager.fileExists(atPath: backup.path) {
+            backup = parent.appendingPathComponent(
+                "ClipFlow-Keychain-Backup-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        }
+        try fileManager.moveItem(at: rootDirectory, to: backup)
+    }
+
+    private static func writeKeyStorageMarker(at url: URL) throws {
+        let data = Data("file-v1\n".utf8)
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func databaseContainsEncryptedData(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+
+        var handle: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(url.path, &handle, flags, nil) == SQLITE_OK, let handle else {
+            if let handle { sqlite3_close(handle) }
+            return true
+        }
+        defer { sqlite3_close(handle) }
+
+        var existenceStatement: OpaquePointer?
+        let existenceSQL = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'clipboard_items' LIMIT 1"
+        guard sqlite3_prepare_v2(handle, existenceSQL, -1, &existenceStatement, nil) == SQLITE_OK,
+              let existenceStatement else { return true }
+        let existenceResult = sqlite3_step(existenceStatement)
+        sqlite3_finalize(existenceStatement)
+        if existenceResult == SQLITE_DONE { return false }
+        guard existenceResult == SQLITE_ROW else { return true }
+
+        var rowStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT 1 FROM clipboard_items LIMIT 1", -1, &rowStatement, nil) == SQLITE_OK,
+              let rowStatement else { return true }
+        let rowResult = sqlite3_step(rowStatement)
+        sqlite3_finalize(rowStatement)
+        if rowResult == SQLITE_ROW { return true }
+        return rowResult != SQLITE_DONE
     }
 
     @discardableResult

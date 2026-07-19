@@ -10,10 +10,10 @@ struct ClipStoreTests {
     func encryptedContentPersistsAcrossStoreRestart() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let key = Data(repeating: 7, count: 32)
+        let keyFile = directory.appendingPathComponent(".clipflow-test-key.json")
         var firstStore: ClipStore? = try ClipStore(
             rootDirectory: directory,
-            vault: SecureVault(keyData: key)
+            vault: SecureVault(keyFileURL: keyFile)
         )
         let secret = "a private clipboard sentence"
         _ = try firstStore?.add(capture(secret), duplicateHandling: .moveToTop)
@@ -22,13 +22,94 @@ struct ClipStoreTests {
 
         let reopened = try ClipStore(
             rootDirectory: directory,
-            vault: SecureVault(keyData: key)
+            vault: SecureVault(keyFileURL: keyFile)
         )
         #expect(reopened.items.count == 1)
         #expect(reopened.items.first?.textContent == secret)
 
         let databaseBytes = try Data(contentsOf: directory.appendingPathComponent("history.sqlite"))
         #expect(String(data: databaseBytes, encoding: .utf8)?.range(of: secret) == nil)
+    }
+
+    @Test("Legacy Keychain-era store is archived and starts fresh")
+    func legacyStoreIsArchivedWithoutMigration() throws {
+        let container = temporaryDirectory()
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("ClipFlow", isDirectory: true)
+        let keyFile = container.appendingPathComponent(".clipflow.json")
+
+        var legacyStore: ClipStore? = try ClipStore(
+            rootDirectory: root,
+            vault: SecureVault(keyData: Data(repeating: 5, count: 32))
+        )
+        _ = try legacyStore?.add(capture("legacy item"), duplicateHandling: .moveToTop)
+        legacyStore = nil
+
+        let freshStore = try ClipStore(rootDirectory: root, keyFileURL: keyFile)
+        #expect(freshStore.items.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: keyFile.path))
+        #expect(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(ClipStore.keyStorageMarkerFilename).path
+        ))
+
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: container,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("ClipFlow-Keychain-Backup-") }
+        #expect(backups.count == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: backups[0].appendingPathComponent("history.sqlite").path
+        ))
+    }
+
+    @Test("Missing file key does not reset file-backed history")
+    func missingFileKeyFailsClosed() throws {
+        let container = temporaryDirectory()
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("ClipFlow", isDirectory: true)
+        let keyFile = container.appendingPathComponent(".clipflow.json")
+
+        var store: ClipStore? = try ClipStore(rootDirectory: root, keyFileURL: keyFile)
+        _ = try store?.add(capture("file-backed item"), duplicateHandling: .moveToTop)
+        store = nil
+        try FileManager.default.removeItem(at: keyFile)
+
+        do {
+            _ = try ClipStore(rootDirectory: root, keyFileURL: keyFile)
+            Issue.record("Expected the missing file key to stop startup.")
+        } catch SecureVaultError.missingKeyFile(let path) {
+            #expect(path == keyFile.path)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("history.sqlite").path))
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: container,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("ClipFlow-Keychain-Backup-") }
+        #expect(backups.isEmpty)
+    }
+
+    @Test("An empty file-backed store can replace a missing key")
+    func emptyFileBackedStoreCanReplaceKey() throws {
+        let container = temporaryDirectory()
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("ClipFlow", isDirectory: true)
+        let keyFile = container.appendingPathComponent(".clipflow.json")
+
+        var store: ClipStore? = try ClipStore(rootDirectory: root, keyFileURL: keyFile)
+        _ = try store?.createCollection(named: "Plain Group")
+        store = nil
+        try FileManager.default.removeItem(at: keyFile)
+
+        let reopened = try ClipStore(rootDirectory: root, keyFileURL: keyFile)
+        #expect(reopened.items.isEmpty)
+        #expect(reopened.collections.map(\.name) == ["Plain Group"])
+        #expect(FileManager.default.fileExists(atPath: keyFile.path))
     }
 
     @Test("Duplicate moves the existing item to the top")
