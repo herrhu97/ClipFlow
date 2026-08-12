@@ -41,10 +41,10 @@ final class QuickPanelController: NSObject, NSWindowDelegate {
             case 53:
                 self.close()
                 return nil
-            case 124 where self.state.searchQuery.isEmpty && navigationModifiers.isEmpty:
+            case 124 where navigationModifiers.isEmpty:
                 self.state.selectNext(offset: 1)
                 return nil
-            case 123 where self.state.searchQuery.isEmpty && navigationModifiers.isEmpty:
+            case 123 where navigationModifiers.isEmpty:
                 self.state.selectNext(offset: -1)
                 return nil
             case 125 where navigationModifiers.isEmpty:
