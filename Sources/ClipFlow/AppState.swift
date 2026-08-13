@@ -51,10 +51,20 @@ final class AppState: ObservableObject {
             let monitor = ClipboardMonitor(settings: settings)
             monitor.start { [weak self, weak store] capture in
                 guard let self, let store else { return }
-                do {
-                    _ = try store.add(capture, duplicateHandling: self.settings.duplicateHandling)
-                } catch {
-                    self.present(error)
+                let duplicateHandling = self.settings.duplicateHandling
+                // Encrypt (and stage any large payload file) off the main actor; only the
+                // database insert runs on the main actor.
+                Task.detached {
+                    do {
+                        let prepared = try store.prepareCapturedPayload(capture)
+                        _ = try await store.add(
+                            capture,
+                            duplicateHandling: duplicateHandling,
+                            preparedPayload: prepared
+                        )
+                    } catch {
+                        await self.present(error)
+                    }
                 }
             }
             clipboardMonitor = monitor
@@ -87,14 +97,19 @@ final class AppState: ObservableObject {
 
     func filteredItems(in store: ClipStore) -> [ClipboardItem] {
         let queryTerms = searchQuery.normalizedForSearch.split(whereSeparator: \.isWhitespace).map(String.init)
-        let collectionName = selectedCollectionID.flatMap { id in store.collections.first(where: { $0.id == id })?.name }
+        var groupNames: [UUID: String] = [:]
+        groupNames.reserveCapacity(store.collections.count)
+        for collection in store.collections {
+            groupNames[collection.id] = collection.name.normalizedForSearch
+        }
+        let selectedGroupName = selectedCollectionID.flatMap { groupNames[$0] }
         let result = store.items.filter { item in
             guard selectedFilter.includes(item),
                   selectedTimeRange.includes(item.lastCopiedAt),
                   selectedCollectionID == nil || item.collectionID == selectedCollectionID else { return false }
             guard !queryTerms.isEmpty else { return true }
-            let groupName = item.collectionID.flatMap { id in store.collections.first(where: { $0.id == id })?.name } ?? collectionName ?? ""
-            let haystack = "\(item.searchText) \(item.sourceAppName) \(groupName)".normalizedForSearch
+            let groupName = item.collectionID.flatMap { groupNames[$0] } ?? selectedGroupName ?? ""
+            let haystack = groupName.isEmpty ? item.searchIndex : "\(item.searchIndex) \(groupName)"
             return queryTerms.allSatisfy { haystack.contains($0) }
         }
         if selectedFilter == .favorites {

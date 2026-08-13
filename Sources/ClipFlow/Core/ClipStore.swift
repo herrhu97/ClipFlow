@@ -16,6 +16,14 @@ enum ClipStoreError: LocalizedError {
     }
 }
 
+/// A clipboard payload that has already been encrypted (and written to disk when large)
+/// off the main actor, so `add` only has to perform the database write.
+struct PreparedClipboardPayload: Sendable {
+    let id: UUID
+    let sealedData: Data
+    let payloadPath: String?
+}
+
 @MainActor
 final class ClipStore: ObservableObject {
     static let keyStorageMarkerFilename = ".file-key-storage-v1"
@@ -141,37 +149,62 @@ final class ClipStore: ObservableObject {
         return rowResult != SQLITE_DONE
     }
 
+    /// Encrypts the capture payload (writing it to the payload directory when it is an
+    /// image or exceeds the inline size limit). Safe to call from any thread so large
+    /// captures do not block the main actor.
+    nonisolated func prepareCapturedPayload(_ capture: CapturedContent) throws -> PreparedClipboardPayload {
+        let sealedData = try vault.seal(capture.data)
+        let id = UUID()
+        guard capture.type == .image || sealedData.count > 512 * 1_024 else {
+            return PreparedClipboardPayload(id: id, sealedData: sealedData, payloadPath: nil)
+        }
+        let url = payloadDirectory.appendingPathComponent(id.uuidString).appendingPathExtension("clip")
+        try sealedData.write(to: url, options: [.atomic, .completeFileProtection])
+        return PreparedClipboardPayload(id: id, sealedData: sealedData, payloadPath: url.path)
+    }
+
     @discardableResult
     func add(_ capture: CapturedContent, duplicateHandling: DuplicateHandling) throws -> ClipboardItem? {
+        try add(capture, duplicateHandling: duplicateHandling, preparedPayload: nil)
+    }
+
+    @discardableResult
+    func add(
+        _ capture: CapturedContent,
+        duplicateHandling: DuplicateHandling,
+        preparedPayload: PreparedClipboardPayload?
+    ) throws -> ClipboardItem? {
         let now = Date()
         if duplicateHandling != .keepBoth,
            let existingIndex = items.firstIndex(where: { $0.contentHash == capture.contentHash && $0.type == capture.type }) {
+            if let path = preparedPayload?.payloadPath {
+                try? FileManager.default.removeItem(atPath: path)
+            }
             guard duplicateHandling == .moveToTop else { return nil }
             var existing = items[existingIndex]
             existing.lastCopiedAt = now
             existing.sourceAppIdentifier = capture.sourceAppIdentifier
             existing.sourceAppName = capture.sourceAppName
+            existing.rebuildSearchIndex()
             try updateCopyMetadata(existing)
             items.remove(at: existingIndex)
             items.insert(existing, at: insertionIndex(for: existing, in: items))
             return existing
         }
 
-        let id = UUID()
-        var payloadPath: String?
-        let encryptedPayload = try vault.seal(capture.data)
-        let storesPayloadOnDisk = capture.type == .image || encryptedPayload.count > 512 * 1_024
-        if storesPayloadOnDisk {
-            let url = payloadDirectory.appendingPathComponent(id.uuidString).appendingPathExtension("clip")
-            try encryptedPayload.write(to: url, options: [.atomic, .completeFileProtection])
-            payloadPath = url.path
+        let payload: PreparedClipboardPayload
+        if let preparedPayload {
+            payload = preparedPayload
+        } else {
+            payload = try prepareCapturedPayload(capture)
         }
+        let storesPayloadOnDisk = payload.payloadPath != nil
 
-        let item = ClipboardItem(
-            id: id,
+        var item = ClipboardItem(
+            id: payload.id,
             type: capture.type,
             textContent: capture.displayText,
-            payloadPath: payloadPath,
+            payloadPath: payload.payloadPath,
             contentHash: capture.contentHash,
             sourceAppIdentifier: capture.sourceAppIdentifier,
             sourceAppName: capture.sourceAppName,
@@ -184,6 +217,7 @@ final class ClipStore: ObservableObject {
             byteSize: Int64(capture.data.count),
             favoriteOrder: 0
         )
+        item.rebuildSearchIndex()
 
         do {
             try withTransaction {
@@ -198,7 +232,7 @@ final class ClipStore: ObservableObject {
                 bind(item.id.uuidString, at: 1, in: statement)
                 bind(item.type.rawValue, at: 2, in: statement)
                 bind(try encryptedString(item.textContent), at: 3, in: statement)
-                bind(storesPayloadOnDisk ? nil : encryptedPayload, at: 4, in: statement)
+                bind(storesPayloadOnDisk ? nil : payload.sealedData, at: 4, in: statement)
                 bind(item.payloadPath, at: 5, in: statement)
                 bind(item.contentHash, at: 6, in: statement)
                 bind(item.sourceAppIdentifier, at: 7, in: statement)
@@ -210,7 +244,9 @@ final class ClipStore: ObservableObject {
                 try step(statement)
             }
         } catch {
-            if let payloadPath { try? FileManager.default.removeItem(atPath: payloadPath) }
+            if let payloadPath = payload.payloadPath {
+                try? FileManager.default.removeItem(atPath: payloadPath)
+            }
             throw error
         }
 
@@ -494,7 +530,7 @@ final class ClipStore: ObservableObject {
             let lastUsed: Date? = sqlite3_column_type(statement, 9) == SQLITE_NULL
                 ? nil
                 : Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
-            result.append(ClipboardItem(
+            var item = ClipboardItem(
                 id: id,
                 type: type,
                 textContent: displayText,
@@ -510,7 +546,9 @@ final class ClipStore: ObservableObject {
                 searchText: searchText,
                 byteSize: sqlite3_column_int64(statement, 13),
                 favoriteOrder: Int(sqlite3_column_int(statement, 14))
-            ))
+            )
+            item.rebuildSearchIndex()
+            result.append(item)
         }
         return result
     }

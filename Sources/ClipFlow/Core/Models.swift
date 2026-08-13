@@ -49,6 +49,19 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     var searchText: String
     var byteSize: Int64
     var favoriteOrder: Int
+    /// Pre-normalized haystack (search text + source app name) maintained by `ClipStore`
+    /// so quick-panel search does not re-fold every item on each keystroke.
+    var searchIndex: String = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, textContent, payloadPath, contentHash, sourceAppIdentifier, sourceAppName
+        case createdAt, lastCopiedAt, lastUsedAt, isPinned, collectionID, searchText, byteSize, favoriteOrder
+    }
+
+    /// Rebuilds the normalized search haystack from the current search text and source app name.
+    mutating func rebuildSearchIndex() {
+        searchIndex = "\(searchText) \(sourceAppName)".normalizedForSearch
+    }
 
     var title: String {
         let candidate = textContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

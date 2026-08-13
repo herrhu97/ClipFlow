@@ -24,7 +24,9 @@ enum SecureVaultError: LocalizedError {
     }
 }
 
-final class SecureVault {
+/// Thread-safe: the only state is an immutable symmetric key, so sealing can happen
+/// off the main actor (e.g. while preparing large clipboard payloads).
+final class SecureVault: @unchecked Sendable {
     static var defaultKeyFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".clipflow.json", isDirectory: false)

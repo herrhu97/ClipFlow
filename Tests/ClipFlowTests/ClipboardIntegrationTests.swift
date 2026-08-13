@@ -7,7 +7,7 @@ import Testing
 @MainActor
 struct ClipboardIntegrationTests {
     @Test("Monitor captures a plain-text pasteboard change")
-    func monitorCapturesPlainTextChange() throws {
+    func monitorCapturesPlainTextChange() async throws {
         let suiteName = "ClipFlowTests.Settings.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -23,9 +23,44 @@ struct ClipboardIntegrationTests {
         monitor.poll()
         monitor.stop()
 
+        // Capture processing runs off the main actor; wait briefly for delivery.
+        let deadline = Date().addingTimeInterval(3)
+        while captured == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
         #expect(captured?.type == .text)
         #expect(captured?.displayText == "integration clipboard text")
         #expect(captured?.searchText.contains("integration clipboard text") == true)
+    }
+
+    @Test("Monitor truncates oversized text captures but keeps the full payload")
+    func monitorTruncatesOversizedTextCapture() async throws {
+        let suiteName = "ClipFlowTests.Settings.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+        let pasteboard = NSPasteboard(name: .init("ClipFlowTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, settings: settings)
+        var captured: CapturedContent?
+        monitor.start { captured = $0 }
+
+        let longText = String(repeating: "a", count: ClipboardMonitor.maximumDisplayTextLength + 100)
+        pasteboard.clearContents()
+        pasteboard.setString(longText, forType: .string)
+        monitor.poll()
+        monitor.stop()
+
+        let deadline = Date().addingTimeInterval(3)
+        while captured == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(captured?.type == .text)
+        #expect(captured?.displayText?.count == ClipboardMonitor.maximumDisplayTextLength)
+        #expect(captured?.searchText.count == ClipboardMonitor.maximumSearchTextLength)
+        #expect(captured?.data.count == longText.utf8.count)
     }
 
     @Test("Paste service restores text without Accessibility permission")

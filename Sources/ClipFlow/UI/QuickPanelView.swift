@@ -298,6 +298,8 @@ private struct ClipboardCard: View {
     @ObservedObject var store: ClipStore
     @State private var imageAsset: ClipboardImageAsset?
     @State private var isHovered = false
+    @State private var fileNames: [String] = []
+    @State private var isFileAvailable = true
 
     private var palette: ClipboardCardPalette { ClipboardCardPalette(item.type, colorScheme: colorScheme) }
 
@@ -323,7 +325,10 @@ private struct ClipboardCard: View {
             y: 2
         )
         .onHover { isHovered = $0 }
-        .task(id: item.id) { loadImageAsset() }
+        .task(id: item.id) {
+            refreshDerivedDetails()
+            await loadImageAsset()
+        }
         .contextMenu { contextMenu }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.type.title) from \(item.sourceAppName): \(item.title)")
@@ -336,7 +341,7 @@ private struct ClipboardCard: View {
                 HStack(spacing: 6) {
                     Label(item.type.title, systemImage: item.type.systemImage)
                         .lineLimit(1)
-                    if !item.isFileAvailable {
+                    if !isFileAvailable {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .help("Original file is unavailable")
                     }
@@ -429,7 +434,7 @@ private struct ClipboardCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if !item.isFileAvailable {
+            if !isFileAvailable {
                 Label("Original file unavailable", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -497,11 +502,19 @@ private struct ClipboardCard: View {
         Button("Delete", role: .destructive) { deleteItem() }
     }
 
-    private var fileNames: [String] {
-        (item.textContent ?? "")
+    /// Computes file names and availability once per item instead of on every body
+    /// evaluation (which happens on each hover, selection change, etc.).
+    private func refreshDerivedDetails() {
+        guard item.type == .file else {
+            fileNames = []
+            isFileAvailable = true
+            return
+        }
+        let paths = (item.textContent ?? "")
             .components(separatedBy: .newlines)
             .filter { !$0.isEmpty }
-            .map { URL(fileURLWithPath: $0).lastPathComponent }
+        fileNames = paths.map { URL(fileURLWithPath: $0).lastPathComponent }
+        isFileAvailable = !paths.isEmpty && paths.allSatisfy { FileManager.default.fileExists(atPath: $0) }
     }
 
     private var metadata: String {
@@ -517,31 +530,35 @@ private struct ClipboardCard: View {
         return ByteCountFormatter.string(fromByteCount: item.byteSize, countStyle: .file)
     }
 
-    private func loadImageAsset() {
+    private func loadImageAsset() async {
         imageAsset = nil
         guard item.type == .image else { return }
         if let cached = ThumbnailCache.shared.asset(for: item.id) {
             imageAsset = cached
             return
         }
-        guard let data = try? store.payloadData(for: item),
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return }
+        guard let data = try? store.payloadData(for: item) else { return }
 
-        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        let pixelWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
-        let pixelHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 520,
-            kCGImageSourceShouldCacheImmediately: true
-        ]
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return }
-        let asset = ClipboardImageAsset(
-            image: NSImage(cgImage: thumbnail, size: .zero),
-            pixelWidth: pixelWidth,
-            pixelHeight: pixelHeight
-        )
+        // Thumbnail decoding is the expensive part; keep it off the main actor.
+        let asset = await Task.detached(priority: .userInitiated) { () -> ClipboardImageAsset? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            let pixelWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+            let pixelHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 520,
+                kCGImageSourceShouldCacheImmediately: true
+            ]
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+            return ClipboardImageAsset(
+                image: NSImage(cgImage: thumbnail, size: .zero),
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight
+            )
+        }.value
+        guard let asset else { return }
         ThumbnailCache.shared.insert(asset, for: item.id)
         imageAsset = asset
     }
@@ -640,13 +657,33 @@ private struct SourceAppBadge: View {
     }
 }
 
+@MainActor
+private final class AppIconCache {
+    static let shared = AppIconCache()
+    private let cache = NSCache<NSString, NSImage>()
+    private var unresolvedIdentifiers = Set<String>()
+
+    func icon(for bundleIdentifier: String) -> NSImage? {
+        let key = bundleIdentifier as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        if unresolvedIdentifiers.contains(bundleIdentifier) { return nil }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+            unresolvedIdentifiers.insert(bundleIdentifier)
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        cache.setObject(icon, forKey: key)
+        return icon
+    }
+}
+
 private struct SourceAppIcon: View {
     let bundleIdentifier: String?
 
     var body: some View {
         if let bundleIdentifier,
-           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+           let icon = AppIconCache.shared.icon(for: bundleIdentifier) {
+            Image(nsImage: icon)
                 .resizable()
         } else {
             Image(systemName: "app.dashed")

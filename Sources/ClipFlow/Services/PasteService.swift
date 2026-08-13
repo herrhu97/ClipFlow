@@ -63,15 +63,32 @@ final class PasteService {
             return .copiedForManualPaste
         }
         targetApplication.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            let source = CGEventSource(stateID: .hidSystemState)
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-            keyDown?.flags = .maskCommand
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-            keyUp?.flags = .maskCommand
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
-        }
+        postCommandVWhenActive(targetApplication)
         return .pasted
+    }
+
+    /// Waits until the target application is actually frontmost before posting Command-V,
+    /// instead of relying on a fixed delay that loses the keystroke when activation is
+    /// slow. Falls back to posting after a timeout so the paste is never silently dropped.
+    private func postCommandVWhenActive(_ application: NSRunningApplication) {
+        Task { [weak self] in
+            let deadline = Date().addingTimeInterval(1.0)
+            while !application.isActive && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+            }
+            // Brief settle time so the target's key window is ready to receive the event.
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            self?.postCommandV()
+        }
+    }
+
+    private func postCommandV() {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
+        keyDown?.flags = .maskCommand
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+        keyUp?.flags = .maskCommand
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
     }
 }

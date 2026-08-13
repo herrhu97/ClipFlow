@@ -2,8 +2,37 @@ import AppKit
 import CryptoKit
 import Foundation
 
+/// A point-in-time copy of the pasteboard contents, taken on the main actor as soon as a
+/// change is observed. Processing (image validation, HTML/RTF parsing, hashing) then
+/// happens off the main actor so large captures do not stall the UI.
+struct PasteboardSnapshot: Sendable {
+    var fileURLs: [URL]?
+    var imageData: Data?
+    var plainText: String?
+    var rtfData: Data?
+    var htmlData: Data?
+
+    init(pasteboard: NSPasteboard) {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        fileURLs = urls.flatMap { $0.isEmpty ? nil : $0 }
+        imageData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
+        plainText = pasteboard.string(forType: .string)
+        rtfData = pasteboard.data(forType: .rtf)
+        htmlData = pasteboard.data(forType: .html)
+    }
+}
+
 @MainActor
 final class ClipboardMonitor {
+    /// Display text is only used for titles and card previews, so oversized captures are
+    /// truncated while the full payload remains available for pasting and export.
+    nonisolated static let maximumDisplayTextLength = 64_000
+    /// Search text is capped so huge documents cannot bloat the encrypted search column.
+    nonisolated static let maximumSearchTextLength = 24_000
+
     private static let privateTypes: Set<String> = [
         "org.nspasteboard.TransientType",
         "org.nspasteboard.ConcealedType",
@@ -65,16 +94,30 @@ final class ClipboardMonitor {
 
         let sourceID = frontmost?.bundleIdentifier
         let sourceName = frontmost?.localizedName ?? "Unknown App"
-        if let capture = capture(sourceID: sourceID, sourceName: sourceName) {
-            handler?(capture)
+        let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
+        let filter = sensitiveFilter
+        Task.detached { [weak self] in
+            guard let capture = Self.capture(
+                snapshot: snapshot,
+                sourceID: sourceID,
+                sourceName: sourceName,
+                sensitiveFilter: filter
+            ) else { return }
+            await self?.deliver(capture)
         }
     }
 
-    private func capture(sourceID: String?, sourceName: String) -> CapturedContent? {
-        if let fileURLs = pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL], !fileURLs.isEmpty {
+    private func deliver(_ capture: CapturedContent) {
+        handler?(capture)
+    }
+
+    nonisolated private static func capture(
+        snapshot: PasteboardSnapshot,
+        sourceID: String?,
+        sourceName: String,
+        sensitiveFilter: SensitiveContentFilter
+    ) -> CapturedContent? {
+        if let fileURLs = snapshot.fileURLs {
             let paths = fileURLs.map(\.path)
             guard let data = try? JSONEncoder().encode(paths) else { return nil }
             return makeCapture(
@@ -87,7 +130,7 @@ final class ClipboardMonitor {
             )
         }
 
-        if let imageData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
+        if let imageData = snapshot.imageData,
            NSImage(data: imageData) != nil {
             return makeCapture(
                 type: .image,
@@ -99,7 +142,7 @@ final class ClipboardMonitor {
             )
         }
 
-        if let string = pasteboard.string(forType: .string) {
+        if let string = snapshot.plainText {
             guard !sensitiveFilter.shouldIgnore(string) else { return nil }
             if let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
                let scheme = url.scheme?.lowercased(),
@@ -116,7 +159,7 @@ final class ClipboardMonitor {
             }
         }
 
-        if let rtf = pasteboard.data(forType: .rtf),
+        if let rtf = snapshot.rtfData,
            let attributed = NSAttributedString(rtf: rtf, documentAttributes: nil),
            !attributed.string.isEmpty,
            !sensitiveFilter.shouldIgnore(attributed.string) {
@@ -130,7 +173,7 @@ final class ClipboardMonitor {
             )
         }
 
-        if let html = pasteboard.data(forType: .html),
+        if let html = snapshot.htmlData,
            let attributed = NSAttributedString(
                 html: html,
                 options: [.documentType: NSAttributedString.DocumentType.html],
@@ -147,7 +190,7 @@ final class ClipboardMonitor {
             )
         }
 
-        if let string = pasteboard.string(forType: .string),
+        if let string = snapshot.plainText,
            !string.isEmpty,
            !sensitiveFilter.shouldIgnore(string),
            let data = string.data(using: .utf8) {
@@ -163,7 +206,7 @@ final class ClipboardMonitor {
         return nil
     }
 
-    private func makeCapture(
+    nonisolated private static func makeCapture(
         type: ClipboardContentType,
         data: Data,
         displayText: String?,
@@ -178,11 +221,21 @@ final class ClipboardMonitor {
         return CapturedContent(
             type: type,
             data: data,
-            displayText: displayText,
-            searchText: searchText,
+            displayText: truncateDisplayText(displayText, for: type),
+            searchText: truncate(searchText, to: maximumSearchTextLength),
             contentHash: hash,
             sourceAppIdentifier: sourceID,
             sourceAppName: sourceName
         )
+    }
+
+    nonisolated private static func truncateDisplayText(_ text: String?, for type: ClipboardContentType) -> String? {
+        // File captures store one path per line in the display text and need every entry.
+        guard type != .file else { return text }
+        return text.map { truncate($0, to: maximumDisplayTextLength) }
+    }
+
+    nonisolated private static func truncate(_ text: String, to limit: Int) -> String {
+        text.count > limit ? String(text.prefix(limit)) : text
     }
 }
