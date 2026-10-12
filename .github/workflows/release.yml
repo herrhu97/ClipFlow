@@ -21,7 +21,7 @@ jobs:
         run: ./scripts/make-dmg.sh
       - name: Verify both architectures and signature
         run: |
-          lipo -verify_arch arm64 x86_64 dist/ClipFlow.app/Contents/MacOS/ClipFlow
+          lipo dist/ClipFlow.app/Contents/MacOS/ClipFlow -verify_arch arm64 x86_64
           file dist/ClipFlow.app/Contents/MacOS/ClipFlow
           codesign --verify --deep --strict dist/ClipFlow.app
           hdiutil verify dist/ClipFlow-*.dmg
