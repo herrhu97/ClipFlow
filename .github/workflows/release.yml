@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/build-app.sh
       - Resources/Info.plist
       - .github/workflows/release.yml
   workflow_dispatch:
