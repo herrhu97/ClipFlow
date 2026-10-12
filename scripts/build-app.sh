@@ -16,7 +16,7 @@ rm -rf "$APP" "$ICONSET"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET"
 
 lipo -create "$ARM_BIN_DIR/ClipFlow" "$INTEL_BIN_DIR/ClipFlow" -output "$CONTENTS/MacOS/ClipFlow"
-lipo -verify_arch arm64 x86_64 "$CONTENTS/MacOS/ClipFlow"
+lipo "$CONTENTS/MacOS/ClipFlow" -verify_arch arm64 x86_64
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
 for size in 16 32 128 256 512; do
