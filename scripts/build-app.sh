@@ -7,12 +7,14 @@ CONTENTS="$APP/Contents"
 ICONSET="$ROOT/.build/ClipFlow.iconset"
 
 cd "$ROOT"
-swift build -c release
+swift build -c release --arch arm64 --arch x86_64
+BIN_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
 
 rm -rf "$APP" "$ICONSET"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET"
 
-cp "$ROOT/.build/release/ClipFlow" "$CONTENTS/MacOS/ClipFlow"
+cp "$BIN_DIR/ClipFlow" "$CONTENTS/MacOS/ClipFlow"
+lipo -verify_arch arm64 x86_64 "$CONTENTS/MacOS/ClipFlow"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
 for size in 16 32 128 256 512; do

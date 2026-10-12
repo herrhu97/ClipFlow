@@ -17,7 +17,7 @@ ClipFlow is a local-first macOS clipboard history manager. It runs in the menu b
 
 ## Build and run
 
-The project requires macOS 13 or newer and the Apple Swift toolchain.
+The project requires macOS 13 or newer and the Apple Swift 6 toolchain. The build script produces a universal app supporting Intel (x86_64) and Apple Silicon (arm64).
 
 ```sh
 ./scripts/build-app.sh

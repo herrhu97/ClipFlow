@@ -1,0 +1,45 @@
+name: Universal macOS release
+on:
+  push:
+    branches: [main]
+    paths:
+      - Resources/Info.plist
+      - .github/workflows/release.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: universal-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal DMG
+        run: ./scripts/make-dmg.sh
+      - name: Verify both architectures and signature
+        run: |
+          lipo -verify_arch arm64 x86_64 dist/ClipFlow.app/Contents/MacOS/ClipFlow
+          file dist/ClipFlow.app/Contents/MacOS/ClipFlow
+          codesign --verify --deep --strict dist/ClipFlow.app
+          hdiutil verify dist/ClipFlow-*.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipFlow-universal
+          path: dist/*.dmg
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          cat > /tmp/release-notes.md <<'NOTES'
+          ## Compatibility
+          - Universal binary: Intel (x86_64) and Apple Silicon (arm64).
+          - Requires macOS 13 or newer.
+          - Both executable architectures and the app signature are verified during the build.
+          - Ad-hoc signed, not notarized; manual approval may be required on first launch.
+          ## Changes
+          - Build and package both Mac architectures instead of only the build host architecture.
+          NOTES
+          gh release create "v$VERSION" "dist/ClipFlow-$VERSION.dmg" --target "$GITHUB_SHA" --title "ClipFlow v$VERSION" --notes-file /tmp/release-notes.md
